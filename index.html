@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>小智快逃</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Noto+Sans+SC:wght@900&display=swap');
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+body {
+  background:#000; color:#fff;
+  font-family:'Share Tech Mono',monospace;
+  overflow:hidden; width:100vw; height:100vh;
+  display:flex; align-items:center; justify-content:center;
+  touch-action:none;
+}
+#gameCanvas { display:block; touch-action:none; }
+.screen {
+  position:absolute; inset:0;
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  background:rgba(0,0,0,0.93); z-index:20;
+}
+.screen.hidden { display:none; }
+.title-text {
+  font-family:'Noto Sans SC',sans-serif;
+  font-size:clamp(38px,9vw,76px); font-weight:900;
+  letter-spacing:.15em; color:#fff;
+  text-shadow:0 0 40px rgba(255,255,255,.25);
+  margin-bottom:6px;
+}
+.subtitle {
+  font-size:clamp(10px,2vw,13px); color:#444;
+  letter-spacing:.35em; margin-bottom:40px;
+  text-transform:uppercase;
+}
+.diff-label { font-size:12px; color:#555; letter-spacing:.25em; text-transform:uppercase; margin-bottom:14px; }
+.diff-row { display:flex; gap:12px; margin-bottom:28px; }
+.diff-btn {
+  background:transparent; border:1.5px solid #333; color:#555;
+  font-family:'Share Tech Mono',monospace; font-size:13px;
+  letter-spacing:.15em; padding:10px 20px; cursor:pointer;
+  transition:all .18s; text-transform:uppercase; border-radius:2px;
+}
+.diff-btn:hover, .diff-btn.active { border-color:#fff; color:#fff; }
+.diff-btn.active { background:rgba(255,255,255,.06); }
+.btn {
+  background:transparent; border:2px solid #fff; color:#fff;
+  font-family:'Share Tech Mono',monospace;
+  font-size:clamp(13px,2.5vw,17px);
+  letter-spacing:.3em; padding:13px 46px; cursor:pointer;
+  transition:all .2s; text-transform:uppercase;
+}
+.btn:hover { background:#fff; color:#000; }
+.result-label { font-size:12px; color:#555; letter-spacing:.25em; margin-bottom:10px; }
+.result-distance {
+  font-family:'Noto Sans SC',sans-serif;
+  font-size:clamp(22px,5vw,36px); font-weight:900;
+  color:#fff; margin-bottom:48px;
+}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<div class="screen" id="startScreen">
+  <div class="title-text">小智快逃</div>
+  <div class="subtitle">XIAO ZHI ESCAPE</div>
+  <div class="diff-label">题目难度</div>
+  <div class="diff-row">
+    <button class="diff-btn active" data-d="1" onclick="setDiff(this)">个位数</button>
+    <button class="diff-btn"        data-d="2" onclick="setDiff(this)">两位数</button>
+    <button class="diff-btn"        data-d="3" onclick="setDiff(this)">三位数</button>
+  </div>
+  <div class="diff-label">逃跑速度</div>
+  <div class="diff-row">
+    <button class="diff-btn" data-s="2"   onclick="setSpeed(this)">慢速</button>
+    <button class="diff-btn active" data-s="3.5" onclick="setSpeed(this)">正常</button>
+    <button class="diff-btn" data-s="5.5" onclick="setSpeed(this)">急速</button>
+  </div>
+  <button class="btn" onclick="startGame()">开始逃跑</button>
+</div>
+
+<div class="screen hidden" id="gameOverScreen">
+  <div class="title-text">逃跑结束</div>
+  <div class="result-label">恭喜你逃亡了</div>
+  <div class="result-distance" id="resultText">0 米</div>
+  <button class="btn" onclick="goToStart()">再来一局</button>
+</div>
+
+<script>
+// ═══════════════════════════════════════
+// CANVAS
+// ═══════════════════════════════════════
+var canvas = document.getElementById('gameCanvas');
+var ctx    = canvas.getContext('2d');
+
+function resize() {
+  canvas.width  = Math.min(window.innerWidth, 480);
+  canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', function(){ resize(); computeLayout(); });
+
+var LANE_COUNT = 3;
+var W, H, LANE_W, LANES;
+function computeLayout() {
+  W = canvas.width;
+  H = canvas.height;
+  LANE_W = W / LANE_COUNT;
+  LANES  = [LANE_W * 0.5, LANE_W * 1.5, LANE_W * 2.5];
+}
+computeLayout();
+
+// ═══════════════════════════════════════
+// ALL GAME VARIABLES — declared at top to avoid ReferenceError
+// ═══════════════════════════════════════
+var gameState        = 'idle';
+var difficulty       = 1;
+var chosenSpeed      = 3.5;   // set from start screen
+var playerTargetLane = 1;
+var playerX          = 0;
+var playerY          = 0;
+var gameSpeed        = 3;
+var distance         = 0;
+var lives            = 2;
+var wrongFlash       = 0;
+var bgLines          = [];
+var collectedNums    = [];
+var collectItems     = [];   // {lane, y, value, collected}
+var doors            = [];   // {lane, y, value, correct, hit, result}
+var equation         = '';
+var correctAnswer    = 0;
+var roundLocked      = false;
+var lastTime         = 0;
+
+// ═══════════════════════════════════════
+// DIFFICULTY
+// ═══════════════════════════════════════
+function setDiff(btn) {
+  document.querySelectorAll('.diff-btn').forEach(function(b){ b.classList.remove('active'); });
+  btn.classList.add('active');
+  difficulty = parseInt(btn.getAttribute('data-d'));
+}
+
+function setSpeed(btn) {
+  // only toggle within speed row
+  btn.parentNode.querySelectorAll('.diff-btn').forEach(function(b){ b.classList.remove('active'); });
+  btn.classList.add('active');
+  chosenSpeed = parseFloat(btn.getAttribute('data-s'));
+}
+
+function randNum() {
+  if (difficulty === 1) return Math.floor(Math.random() * 9) + 1;  // 1-9
+  if (difficulty === 2) {
+    // 10% 个位，90% 两位
+    return Math.random() < 0.1
+      ? Math.floor(Math.random() * 9)  + 1    // 1-9
+      : Math.floor(Math.random() * 90) + 10;  // 10-99
+  }
+  // difficulty 3：5% 个位，15% 两位，80% 三位
+  var r = Math.random();
+  if (r < 0.05) return Math.floor(Math.random() * 9)   + 1;    // 1-9
+  if (r < 0.20) return Math.floor(Math.random() * 90)  + 10;   // 10-99
+                return Math.floor(Math.random() * 900) + 100;   // 100-999
+}
+
+// ═══════════════════════════════════════
+// SCREEN HELPERS
+// ═══════════════════════════════════════
+function goToStart() {
+  document.getElementById('gameOverScreen').classList.add('hidden');
+  document.getElementById('startScreen').classList.remove('hidden');
+}
+
+function startGame() {
+  document.getElementById('startScreen').classList.add('hidden');
+  document.getElementById('gameOverScreen').classList.add('hidden');
+
+  computeLayout();
+  playerTargetLane = 1;
+  playerX          = LANES[1];
+  playerY          = H * 0.65;
+  gameSpeed        = chosenSpeed;   // fixed — never changes during play
+  distance         = 0;
+  lives            = 2;
+  wrongFlash       = 0;
+  collectedNums    = [];
+  collectItems     = [];
+  doors            = [];
+  equation         = '';
+  roundLocked      = false;
+
+  initBgLines();
+  gameState = 'collect';
+  spawnCollectItems();
+  lastTime = 0;
+  requestAnimationFrame(loop);
+}
+
+// ═══════════════════════════════════════
+// BG LINES
+// ═══════════════════════════════════════
+function initBgLines() {
+  bgLines = [];
+  for (var i = 0; i < 30; i++) {
+    bgLines.push({ x: Math.random()*W, y: Math.random()*H, len: 20 + Math.random()*60 });
+  }
+}
+
+// ═══════════════════════════════════════
+// SPAWN HELPERS
+// ═══════════════════════════════════════
+
+// Spawn exactly 3 items — one in EACH lane — all at the same Y row above screen
+// This guarantees the player's lane always has a number
+function spawnCollectItems() {
+  collectItems = [];
+  // all three appear at the same height so they form one row
+  var startY = -80;
+  for (var lane = 0; lane < 3; lane++) {
+    collectItems.push({
+      lane:      lane,
+      y:         startY,
+      value:     randNum(),
+      collected: false
+    });
+  }
+}
+
+function spawnDoors() {
+  var op = Math.random() > 0.5 ? '+' : '-';
+  var a = collectedNums[0];
+  var b = collectedNums[1];
+  if (op === '-' && a < b) { var tmp = a; a = b; b = tmp; }
+  correctAnswer = (op === '+') ? a + b : a - b;
+  equation = a + ' ' + op + ' ' + b + ' = ?';
+
+  // 2 wrong answers
+  var used   = {};
+  used[correctAnswer] = true;
+  var wrongs = [];
+  var attempts = 0;
+  while (wrongs.length < 2 && attempts < 300) {
+    attempts++;
+    var spread = (difficulty === 1) ? 5 : (difficulty === 2) ? 20 : 80;
+    var offset = (Math.floor(Math.random() * spread) + 1) * (Math.random() > 0.5 ? 1 : -1);
+    var w = correctAnswer + offset;
+    if (!used[w]) { used[w] = true; wrongs.push(w); }
+  }
+  if (wrongs.length < 2) { wrongs[0] = correctAnswer + 1; wrongs[1] = correctAnswer - 1; }
+
+  var answers = [correctAnswer, wrongs[0], wrongs[1]];
+  // shuffle
+  for (var i = 2; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var t = answers[i]; answers[i] = answers[j]; answers[j] = t;
+  }
+
+  roundLocked = false;
+  doors = [];
+  for (var k = 0; k < 3; k++) {
+    doors.push({
+      lane:    k,
+      y:       -110,
+      value:   answers[k],
+      correct: answers[k] === correctAnswer,
+      hit:     false,
+      result:  null
+    });
+  }
+}
+
+// ═══════════════════════════════════════
+// INPUT
+// ═══════════════════════════════════════
+canvas.addEventListener('click', handleInput);
+canvas.addEventListener('touchstart', function(e){
+  e.preventDefault();
+  handleInput(e.touches[0]);
+}, { passive: false });
+
+function handleInput(e) {
+  if (gameState === 'idle' || gameState === 'gameover') return;
+  var rect = canvas.getBoundingClientRect();
+  var x    = (e.clientX - rect.left) * (W / rect.width);
+  playerTargetLane = Math.max(0, Math.min(2, Math.floor(x / LANE_W)));
+}
+
+// ═══════════════════════════════════════
+// LOOP
+// ═══════════════════════════════════════
+function loop(ts) {
+  if (gameState === 'gameover') return;
+  var dt = (lastTime === 0) ? 1 : Math.min((ts - lastTime) / 16.67, 3);
+  lastTime = ts;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function update(dt) {
+  // smooth player slide
+  playerX += (LANES[playerTargetLane] - playerX) * 0.22 * dt * 3;
+
+  // scroll bg
+  for (var i = 0; i < bgLines.length; i++) {
+    bgLines[i].y += gameSpeed * dt;
+    if (bgLines[i].y > H + 80) {
+      bgLines[i].y   = -80;
+      bgLines[i].x   = Math.random() * W;
+      bgLines[i].len = 20 + Math.random() * 60;
+    }
+  }
+
+  distance += gameSpeed * dt * 0.05;
+  if (wrongFlash > 0) wrongFlash -= dt;
+
+  // ── COLLECT ──
+  if (gameState === 'collect') {
+    // Move entire row together (all share same Y)
+    if (collectItems.length > 0) {
+      var newY = collectItems[0].y + gameSpeed * dt;
+      for (var i = 0; i < collectItems.length; i++) {
+        collectItems[i].y = newY;
+      }
+
+      // Check if player's lane item is hit
+      var hitThisFrame = false;
+      for (var i = 0; i < collectItems.length; i++) {
+        var item = collectItems[i];
+        if (item.collected) continue;
+        if (item.lane !== playerTargetLane) continue;
+        if (newY > playerY - 52 && newY < playerY + 52) {
+          item.collected = true;
+          collectedNums.push(item.value);
+          hitThisFrame = true;
+          if (collectedNums.length === 2) {
+            spawnDoors();
+            gameState = 'choose';
+          } else {
+            // collected first number — spawn a fresh row
+            spawnCollectItems();
+          }
+          break;
+        }
+      }
+
+      // If entire row scrolled off without being collected, spawn fresh row
+      if (!hitThisFrame && collectItems.length > 0 && collectItems[0].y > H + 60) {
+        spawnCollectItems();
+      }
+    }
+  }
+
+  // ── CHOOSE ──
+  if (gameState === 'choose') {
+    for (var i = 0; i < doors.length; i++) {
+      doors[i].y += gameSpeed * dt;
+    }
+
+    if (!roundLocked) {
+      for (var i = 0; i < doors.length; i++) {
+        var door = doors[i];
+        if (door.hit) continue;
+        if (door.lane !== playerTargetLane) continue;
+        if (door.y > playerY - 56 && door.y < playerY + 56) {
+          door.hit    = true;
+          roundLocked = true;
+          if (door.correct) {
+            door.result = 'correct';
+            setTimeout(nextRound, 350);
+          } else {
+            door.result = 'wrong';
+            lives--;
+            wrongFlash  = 25;
+            if (lives <= 0) setTimeout(triggerGameOver, 400);
+            else            setTimeout(nextRound, 450);
+          }
+          break;
+        }
+      }
+    }
+
+    // all doors gone past screen
+    var allGone = true;
+    for (var i = 0; i < doors.length; i++) {
+      if (doors[i].y <= H + 80) { allGone = false; break; }
+    }
+    if (allGone) nextRound();
+  }
+}
+
+function nextRound() {
+  collectedNums = [];
+  collectItems  = [];
+  doors         = [];
+  roundLocked   = false;
+  gameState     = 'collect';
+  spawnCollectItems();
+}
+
+function triggerGameOver() {
+  if (gameState === 'gameover') return;
+  gameState = 'gameover';
+  document.getElementById('resultText').textContent = Math.floor(distance) + ' 米';
+  setTimeout(function(){
+    document.getElementById('gameOverScreen').classList.remove('hidden');
+  }, 500);
+}
+
+// ═══════════════════════════════════════
+// DRAW
+// ═══════════════════════════════════════
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  drawBgLines();
+  drawLaneDividers();
+  drawExitGate();
+
+  if (gameState === 'collect') drawCollectItems();
+  if (gameState === 'choose')  { drawDoors(); drawEquationHUD(); }
+
+  drawPlayer();
+  drawHUD();
+  if (wrongFlash > 0) drawWrongFlash();
+}
+
+function drawBgLines() {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([8, 14]);
+  for (var i = 0; i < bgLines.length; i++) {
+    var l = bgLines[i];
+    ctx.beginPath(); ctx.moveTo(l.x, l.y); ctx.lineTo(l.x, l.y + l.len); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawLaneDividers() {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([12, 20]);
+  for (var i = 1; i < LANE_COUNT; i++) {
+    ctx.beginPath(); ctx.moveTo(i * LANE_W, 0); ctx.lineTo(i * LANE_W, H); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawPlayer() {
+  var px = playerX, py = playerY, sz = 26;
+  ctx.save();
+  ctx.shadowColor = 'rgba(255,255,255,0.5)';
+  ctx.shadowBlur  = 18;
+  ctx.fillStyle   = '#fff';
+  ctx.fillRect(px - sz/2, py - sz/2, sz, sz);
+  ctx.restore();
+  var t = Date.now() / 110;
+  ctx.save();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(px-6, py+sz/2); ctx.lineTo(px-6+Math.sin(t)*8,       py+sz/2+10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(px+6, py+sz/2); ctx.lineTo(px+6+Math.sin(t+Math.PI)*8, py+sz/2+10); ctx.stroke();
+  ctx.restore();
+}
+
+function drawCollectItems() {
+  for (var i = 0; i < collectItems.length; i++) {
+    var item = collectItems[i];
+    if (item.collected) continue;
+    var x  = LANES[item.lane];
+    var y  = item.y;
+    var ns = String(item.value);
+    var bw = Math.max(54, ns.length * 17 + 26);
+    var bh = 42;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth   = 1.5;
+    ctx.strokeRect(x - bw/2, y - bh/2, bw, bh);
+    ctx.fillStyle   = '#fff';
+    ctx.font        = 'bold 22px Share Tech Mono';
+    ctx.textAlign   = 'center';
+    ctx.textBaseline= 'middle';
+    ctx.fillText(ns, x, y);
+    ctx.restore();
+  }
+}
+
+function drawDoors() {
+  for (var i = 0; i < doors.length; i++) {
+    var door = doors[i];
+    var x    = LANES[door.lane];
+    var y    = door.y;
+    var ns   = String(door.value);
+    var dw   = Math.max(LANE_W * 0.66, ns.length * 15 + 36);
+    var dh   = 66;
+    var color= door.result === 'wrong' ? '#3a3a3a' : '#fff';
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.strokeRect(x - dw/2, y - dh/2, dw, dh);
+    // inner column accents
+    ctx.beginPath(); ctx.moveTo(x-dw/2+7, y-dh/2); ctx.lineTo(x-dw/2+7, y+dh/2-7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+dw/2-7, y-dh/2); ctx.lineTo(x+dw/2-7, y+dh/2-7); ctx.stroke();
+    if (door.result === 'correct') {
+      ctx.fillStyle = 'rgba(255,255,255,0.1)';
+      ctx.fillRect(x-dw/2, y-dh/2, dw, dh);
+    }
+    ctx.fillStyle    = color;
+    ctx.font         = 'bold 22px Share Tech Mono';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(ns, x, y);
+    ctx.restore();
+  }
+}
+
+function drawEquationHUD() {
+  ctx.save();
+  ctx.fillStyle    = 'rgba(255,255,255,0.88)';
+  ctx.font         = 'bold 20px Share Tech Mono';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText(equation, W / 2, 72);
+  ctx.restore();
+}
+
+function drawExitGate() {
+  // A wide gate/door spanning the full width at the very top of the screen
+  // It scrolls slightly to reinforce the "running toward exit" illusion
+  var gateH  = 52;
+  var gateY  = 0;
+  var pulse  = Math.sin(Date.now() / 600) * 0.5 + 0.5;  // gentle glow pulse
+
+  ctx.save();
+
+  // Dark overhang above gate
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(0, 0, W, gateH);
+
+  // Gate frame — top bar
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth   = 3;
+  ctx.beginPath();
+  ctx.moveTo(0, gateH);
+  ctx.lineTo(W, gateH);
+  ctx.stroke();
+
+  // Three archway openings, one per lane
+  var archW  = LANE_W * 0.62;
+  var archH  = gateH * 0.78;
+  var archY  = gateH - archH;
+
+  for (var i = 0; i < 3; i++) {
+    var cx = LANES[i];
+    var ax = cx - archW / 2;
+
+    // arch fill glow
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.04 + pulse * 0.05) + ')';
+    ctx.beginPath();
+    ctx.rect(ax, archY, archW, archH);
+    ctx.fill();
+
+    // arch outline
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.lineWidth   = 1.5;
+    ctx.strokeRect(ax, archY, archW, archH);
+
+    // rounded arch top
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth   = 1;
+    ctx.beginPath();
+    ctx.arc(cx, archY + archW * 0.15, archW * 0.28, Math.PI, 0);
+    ctx.stroke();
+  }
+
+  // "出口" label in the center above the arches
+  ctx.fillStyle    = 'rgba(255,255,255,' + (0.55 + pulse * 0.3) + ')';
+  ctx.font         = 'bold 13px Share Tech Mono';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('出  口', W / 2, gateH * 0.3);
+
+  // Left and right gate pillars
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth   = 2;
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, gateH); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(W, 0); ctx.lineTo(W, gateH); ctx.stroke();
+
+  // Scrolling tick marks on top bar for motion feel
+  var tickOffset = (Date.now() / (1000 / gameSpeed) * 18) % 36;
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.lineWidth   = 1;
+  for (var tx = -tickOffset; tx < W; tx += 36) {
+    ctx.beginPath();
+    ctx.moveTo(tx, gateH - 6);
+    ctx.lineTo(tx + 12, gateH - 6);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawHUD() {
+  // distance — bottom left
+  ctx.save();
+  ctx.fillStyle    = 'rgba(255,255,255,0.35)';
+  ctx.font         = '12px Share Tech Mono';
+  ctx.textAlign    = 'left';
+  ctx.fillText(Math.floor(distance) + ' m', 14, H - 14);
+  ctx.restore();
+
+  // collected hint — above distance
+  if (collectedNums.length > 0 && gameState === 'collect') {
+    ctx.save();
+    ctx.fillStyle    = 'rgba(255,255,255,0.6)';
+    ctx.font         = '13px Share Tech Mono';
+    ctx.textAlign    = 'left';
+    ctx.fillText('已收集: ' + collectedNums.join('  '), 14, H - 34);
+    ctx.restore();
+  }
+
+  // hearts — top right, below the exit gate
+  var hs = 17, hp = 7;
+  for (var i = 0; i < 2; i++) {
+    drawHeart(W - 14 - i * (hs + hp), 70, hs, i < lives);
+  }
+}
+
+function drawHeart(cx, cy, size, filled) {
+  var s = size / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(cx, cy + s * 0.9);
+  ctx.bezierCurveTo(cx-s*1.4, cy+s*.3,  cx-s*1.4, cy-s*.6, cx-s*.7, cy-s*.6);
+  ctx.bezierCurveTo(cx-s*.3,  cy-s*.6,  cx,        cy-s*.2, cx,      cy-s*.2);
+  ctx.bezierCurveTo(cx,        cy-s*.2,  cx+s*.3,   cy-s*.6, cx+s*.7, cy-s*.6);
+  ctx.bezierCurveTo(cx+s*1.4, cy-s*.6,  cx+s*1.4,  cy+s*.3, cx,      cy+s*.9);
+  ctx.closePath();
+  if (filled) {
+    ctx.fillStyle   = '#fff';
+    ctx.shadowColor = 'rgba(255,255,255,0.5)';
+    ctx.shadowBlur  = 8;
+    ctx.fill();
+  } else {
+    ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+    ctx.lineWidth   = 1.5;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+
+function drawWrongFlash() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,50,50,' + (wrongFlash / 25 * 0.2) + ')';
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════
+// INIT STATIC BG
+// ═══════════════════════════════════════
+initBgLines();
+computeLayout();
+ctx.fillStyle = '#000';
+ctx.fillRect(0, 0, W, H);
+ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+ctx.lineWidth = 1;
+ctx.setLineDash([8, 14]);
+for (var i = 0; i < bgLines.length; i++) {
+  var l = bgLines[i];
+  ctx.beginPath(); ctx.moveTo(l.x, l.y); ctx.lineTo(l.x, l.y + l.len); ctx.stroke();
+}
+ctx.setLineDash([]);
+</script>
+</body>
+</html>
